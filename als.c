@@ -7,6 +7,14 @@
 MODULE_AUTHOR("Viktar Vauchkevich <victorenator@gmail.com>");
 MODULE_DESCRIPTION("Ambient Light Sensor Driver");
 MODULE_LICENSE("GPL");
+/*
+ *  ALS enable
+ */
+static int alae = 0;
+module_param(alae, uint, 0444);
+MODULE_PARM_DESC(alae, "ALAE value (*0 disabled, 1 enabled)");
+
+ACPI_MODULE_NAME("ALS")
 
 static int als_add(struct acpi_device *device);
 static int als_remove(struct acpi_device *device);
@@ -31,28 +39,77 @@ static struct acpi_driver als_driver = {
 	.owner = THIS_MODULE,
 };
 
-static u32 als_get_ali(struct acpi_device *device)
+
+static u32 als_set_int(acpi_handle handle, const char *func, int param)
 {
-	u64 ali;
+	struct acpi_object_list params;
+	union acpi_object in_obj;
+	u64 ret;
+	acpi_status status;
+	params.count = 1;
+	params.pointer = &in_obj;
+	in_obj.type = ACPI_TYPE_INTEGER;
+	in_obj.integer.value = param;
+
+	status = acpi_evaluate_integer(handle, (acpi_string) func, &params, &ret);
+	if(!ACPI_SUCCESS(status))
+	    ACPI_ERROR((AE_INFO,"Integer evaluation for %s failed[%d]",func,status));
+
+	return ret;
+}
+static u32 als_get_int(acpi_handle handle, const char *func)
+{
+	u64 val = 1844;
 	acpi_status status;
 
-	status = acpi_evaluate_integer(device->handle, (acpi_string) "_ALI", NULL, &ali);
+	status = acpi_evaluate_integer(handle, (acpi_string) func, NULL, &val);
 
-	return ali;
+	if(!ACPI_SUCCESS(status))
+	    ACPI_ERROR((AE_INFO,"Integer evaluation for %s failed[%d]",func,status));
+
+	return val;
 }
-
-static ssize_t als_show_ali(struct device *dev,
+static ssize_t als_show_als(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
 	struct acpi_device *device = to_acpi_device(dev);
 
-	return sprintf(buf, "%d\n", als_get_ali(device));
+	return sprintf(buf,
+			"Local(ALSC/ALAE):          %d\n"
+			"\\_SB_.ALAE:                %d\n"
+			"\\_SB_.LSTP:                %d\n"
+			"\\_SB_.BRTI:                %d\n"
+			"\\_SB_.ALS_._ALI:           %d\n"
+			"\\_SB_.ATKD.GALS:           %d\n"
+			"\\_SB_.PCI0.LPCB.EC0_.RALS: %d\n",
+			alae, als_get_int(NULL,"\\_SB_.ALAE"),
+			als_get_int(NULL,"\\_SB_.LSTP"),
+			als_get_int(NULL,"\\_SB_.BRTI"),
+			als_get_int(device->handle,"_ALI"), 
+			als_get_int(NULL,"\\_SB.ATKD.GALS"), 
+			als_get_int(NULL,"\\_SB_.PCI0.LPCB.EC0_.RALS"));
 }
+static ssize_t als_write_alsc(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t len)
+{
+	int ret;
+	uint num;
+	//struct acpi_device *device = to_acpi_device(dev);
 
-static DEVICE_ATTR(ali, S_IRUGO, als_show_ali, NULL);
+	if (!buf)
+		return -EINVAL;
+	ret = kstrtouint(buf, 0, &num);
+	if (ret == -EINVAL || num < 0 || num > 1)
+		return -EINVAL;
+	alae = num;
+	return als_set_int(NULL,"\\_SB_.ATKD.ALSC",num);
+}
+static DEVICE_ATTR(als, S_IRUGO, als_show_als, NULL);
+static DEVICE_ATTR(alsc, S_IWUSR, NULL, als_write_alsc);
 
 static struct attribute *als_attributes[] = {
-	&dev_attr_ali.attr,
+	&dev_attr_als.attr,
+	&dev_attr_alsc.attr,
 	NULL
 };
 
@@ -62,7 +119,7 @@ static const struct attribute_group als_attr_group = {
 
 static int als_add(struct acpi_device *device)
 {
-	int result;
+	int result = als_set_int(NULL,"\\_SB_.ATKD.ALSC",alae);
 	result = sysfs_create_group(&device->dev.kobj, &als_attr_group);
 	return result;
 }
@@ -75,7 +132,7 @@ static int als_remove(struct acpi_device *device)
 
 static void als_notify(struct acpi_device* device, u32 event)
 {
-	pr_info("als_notify %x %x\n", event, als_get_ali(device));
+	pr_info("als_notify %x %x\n", event, als_get_int(device,"_ALI"));
 	kobject_uevent(&device->dev.kobj, KOBJ_CHANGE);
 }
 
